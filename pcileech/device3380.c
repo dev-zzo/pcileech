@@ -144,6 +144,7 @@ BOOL Device3380_ReadDMA_Retry(PTHREAD_DATA_READ_EP ptd)
 VOID Device3380_ReadDMA2(PTHREAD_DATA_READ_EP ptd)
 {
 	DWORD dwTimeout, cbTransferred;
+	DWORD dwStat;
 	if(ptd->cb > ptd->pDeviceData->MaxSizeDmaIo) {
 		ptd->result = FALSE;
 		ptd->isFinished = TRUE;
@@ -153,14 +154,20 @@ VOID Device3380_ReadDMA2(PTHREAD_DATA_READ_EP ptd)
 	// (XMB * 1000 * 3) / (35 * 1024 * 1024) -> 0x2fc9 ~> 0x3000 :: 4k->64ms, 5.3M->520ms
 	dwTimeout = 64 + ptd->cb / 0x3000;
 	WinUsb_SetPipePolicy(ptd->pDeviceData->WinusbHandle, ptd->pep->pipe, PIPE_TRANSFER_TIMEOUT, (ULONG)sizeof(BOOL), &dwTimeout);
-	// perform memory read
+	// Abort any ongoing DMA
+	Device3380_WriteCsr(ptd->pDeviceData, ptd->pep->rSTAT, 0x02, CSR_CONFIGSPACE_MEMM | CSR_BYTE0); // DMA_ABORT
+	do {
+		Device3380_ReadCsr(ptd->pDeviceData, ptd->pep->rSTAT, &dwStat, CSR_CONFIGSPACE_MEMM | CSR_BYTEALL);
+	} while (dwStat & 0x02);
+	// Re-enable DMA
+	Device3380_WriteCsr(ptd->pDeviceData, ptd->pep->rCTL, 0xc2, CSR_CONFIGSPACE_MEMM | CSR_BYTE0); // DMA_ENABLE
+	// Program DMA
 	Device3380_WriteCsr(ptd->pDeviceData, ptd->pep->rADDR, (DWORD)ptd->qwAddr, CSR_CONFIGSPACE_MEMM | CSR_BYTEALL); // DMA_ADDRESS
 	Device3380_WriteCsr(ptd->pDeviceData, ptd->pep->rCOUNT, 0x40000000 | ptd->cb, CSR_CONFIGSPACE_MEMM | CSR_BYTEALL); // DMA_COUNT
 	Device3380_WriteCsr(ptd->pDeviceData, ptd->pep->rSTAT, 0x080000c1, CSR_CONFIGSPACE_MEMM | CSR_BYTE0 | CSR_BYTE3); // DMA_START & DMA_CLEAR_ABORT
+	Device3380_WriteCsr(ptd->pDeviceData, REG_PCI_STATCMD, 0x07, CSR_CONFIGSPACE_PCIE | CSR_BYTE0); // BUS_MASTER ??? needed ???
 	ptd->result = WinUsb_ReadPipe(ptd->pDeviceData->WinusbHandle, ptd->pep->pipe, ptd->pb, ptd->cb, &cbTransferred, NULL);
-	if(!ptd->result) {
-		ptd->result = Device3380_ReadDMA_Retry(ptd);
-	}
+	// printf("READ: Addr %08X, Req %08X, Rcd %08X %s\n", (DWORD)ptd->qwAddr, ptd->cb, cbTransferred, ptd->cb != cbTransferred ? " !!!" : "");
 	ptd->isFinished = TRUE;
 }
 
@@ -413,7 +420,7 @@ BOOL Device3380_Open(_Inout_ PPCILEECH_CONTEXT ctx)
 	if(ctx->cfg->fVerbose) { printf("Device Info: USB3380.\n"); }
 	// set callback functions and fix up config
 	ctx->cfg->dev.tp = PCILEECH_DEVICE_USB3380;
-	ctx->cfg->dev.qwMaxSizeDmaIo = 0x01000000;
+	ctx->cfg->dev.qwMaxSizeDmaIo = 0x1000;
 	ctx->cfg->dev.qwAddrMaxNative = 0x00000000ffffffff;
 	ctx->cfg->dev.fPartialPageReadSupported = TRUE;
 	ctx->cfg->dev.pfnClose = Device3380_Close;
@@ -513,7 +520,7 @@ BOOL Device3380_Open2(_Inout_ PPCILEECH_CONTEXT ctx)
 	}
 	Device3380_Open_SetPipePolicy(pDeviceData);
 	pDeviceData->HandlesOpen = TRUE;
-	pDeviceData->IsAllowedMultiThreadDMA = IsWindows8OrGreater(); // multi threaded DMA read fails on WIN7.
+	pDeviceData->IsAllowedMultiThreadDMA = FALSE; // IsWindows8OrGreater(); // multi threaded DMA read fails on WIN7.
 	pDeviceData->MaxSizeDmaIo = ctx->cfg->qwMaxSizeDmaIo;
 	return TRUE;
 }
