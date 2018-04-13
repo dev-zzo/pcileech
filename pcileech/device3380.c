@@ -132,6 +132,12 @@ BOOL Device3380_ReadDMA_Retry(PTHREAD_DATA_READ_EP ptd)
 {
 	BOOL result;
 	DWORD cbTransferred;
+	DWORD dwStat;
+	// Abort any ongoing DMA
+	Device3380_WriteCsr(ptd->pDeviceData, ptd->pep->rSTAT, 0x02, CSR_CONFIGSPACE_MEMM | CSR_BYTE0); // DMA_ABORT
+	do {
+		Device3380_ReadCsr(ptd->pDeviceData, ptd->pep->rSTAT, &dwStat, CSR_CONFIGSPACE_MEMM | CSR_BYTEALL);
+	} while (dwStat & 0x02);
 	Device3380_WriteCsr(ptd->pDeviceData, ptd->pep->rCTL, 0xc2, CSR_CONFIGSPACE_MEMM | CSR_BYTE0); // DMA_ENABLE
 	Device3380_WriteCsr(ptd->pDeviceData, ptd->pep->rADDR, (DWORD)ptd->qwAddr, CSR_CONFIGSPACE_MEMM | CSR_BYTEALL); // DMA_ADDRESS
 	Device3380_WriteCsr(ptd->pDeviceData, ptd->pep->rCOUNT, 0x40000000 | ptd->cb, CSR_CONFIGSPACE_MEMM | CSR_BYTEALL); // DMA_COUNT
@@ -165,9 +171,11 @@ VOID Device3380_ReadDMA2(PTHREAD_DATA_READ_EP ptd)
 	Device3380_WriteCsr(ptd->pDeviceData, ptd->pep->rADDR, (DWORD)ptd->qwAddr, CSR_CONFIGSPACE_MEMM | CSR_BYTEALL); // DMA_ADDRESS
 	Device3380_WriteCsr(ptd->pDeviceData, ptd->pep->rCOUNT, 0x40000000 | ptd->cb, CSR_CONFIGSPACE_MEMM | CSR_BYTEALL); // DMA_COUNT
 	Device3380_WriteCsr(ptd->pDeviceData, ptd->pep->rSTAT, 0x080000c1, CSR_CONFIGSPACE_MEMM | CSR_BYTE0 | CSR_BYTE3); // DMA_START & DMA_CLEAR_ABORT
-	Device3380_WriteCsr(ptd->pDeviceData, REG_PCI_STATCMD, 0x07, CSR_CONFIGSPACE_PCIE | CSR_BYTE0); // BUS_MASTER ??? needed ???
 	ptd->result = WinUsb_ReadPipe(ptd->pDeviceData->WinusbHandle, ptd->pep->pipe, ptd->pb, ptd->cb, &cbTransferred, NULL);
 	// printf("READ: Addr %08X, Req %08X, Rcd %08X %s\n", (DWORD)ptd->qwAddr, ptd->cb, cbTransferred, ptd->cb != cbTransferred ? " !!!" : "");
+	if (!ptd->result) {
+		ptd->result = Device3380_ReadDMA_Retry(ptd);
+	}
 	ptd->isFinished = TRUE;
 }
 
