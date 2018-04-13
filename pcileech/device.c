@@ -87,8 +87,7 @@ DWORD DeviceReadDMAEx_DoWork(_Inout_ PPCILEECH_CONTEXT ctx, _In_ QWORD qwAddr, _
     DWORD i, cbSuccess = 0;
     BOOL result;
     // calculate current chunk sizes
-    cbChunk = ~0xfff & min(cb, cbMaxSizeIo);
-    cbChunk = (cbChunk > 0x3000) ? cbChunk : 0x1000;
+    cbChunk = min(cb, cbMaxSizeIo);
     cChunkTotal = (cb / cbChunk) + ((cb % cbChunk) ? 1 : 0);
     // try read memory
     memset(pb, 0, cb);
@@ -110,7 +109,7 @@ DWORD DeviceReadDMAEx_DoWork(_Inout_ PPCILEECH_CONTEXT ctx, _In_ QWORD qwAddr, _
             } else if(cbRd == 0x1000) {
                 ZeroMemory(pb + cbRdOff, cbRd);
                 PageStatUpdate(pPageStat, qwAddr + cbRdOff + cbRd, 0, 1);
-            } else {
+            } else if(cbRd > CHUNK_FAIL_DIVISOR) {
                 cbSuccess += DeviceReadDMAEx_DoWork(ctx, qwAddr + cbRdOff, pb + cbRdOff, cbRd, pPageStat, cbRd / CHUNK_FAIL_DIVISOR, flags);
             }
         }

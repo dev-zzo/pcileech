@@ -193,18 +193,19 @@ VOID ActionMemoryTestReadWrite(_Inout_ PPCILEECH_CONTEXT ctx)
 	BYTE pb1[4096], pb2[4096], pb3[4096];
 	DWORD dwAddrPci32 = (DWORD)(ctx->cfg->qwAddrMin & 0xfffff000);
 	DWORD i, dwOffset, dwRuns = 1000;
+	DWORD dwChunkSize = min(4906, (DWORD)ctx->cfg->qwMaxSizeDmaIo);
 	BOOL r1, r2;
 	if(ctx->phKMD) {
 		printf("Memory Test Read: Failed. Memory test may not run in KMD mode.\n");
 		return;
 	}
-	DeviceReadDMA(ctx, dwAddrPci32, pb1, 4096, 0);
+	DeviceReadDMA(ctx, dwAddrPci32, pb1, dwChunkSize, 0);
 	// READ DMA
 	printf("Memory Test Read: starting, reading %i times from address: 0x%08x\n", dwRuns, dwAddrPci32);
-	DeviceReadDMA(ctx, dwAddrPci32, pb1, 4096, 0);
+	DeviceReadDMA(ctx, dwAddrPci32, pb1, dwChunkSize, 0);
 	for(i = 0; i < dwRuns; i++) {
-		r1 = DeviceReadDMA(ctx, dwAddrPci32, pb2, 4096, 0);
-		if(!r1 || (dwOffset = Util_memcmpEx(pb1, pb2, 4096))) {
+		r1 = DeviceReadDMA(ctx, dwAddrPci32, pb2, dwChunkSize, 0);
+		if(!r1 || (dwOffset = Util_memcmpEx(pb1, pb2, dwChunkSize))) {
 			printf("Memory Test Read: Failed. DMA failed / data changed by target computer / memory corruption. Read: %i. Run: %i. Offset: 0x%03x\n", r1, i, (r1 ? --dwOffset : 0));
 			return;
 		}
@@ -216,15 +217,15 @@ VOID ActionMemoryTestReadWrite(_Inout_ PPCILEECH_CONTEXT ctx)
 		printf("Memory Test Write: starting, reading/writing %i times from address: 0x%08x\n", dwRuns, dwAddrPci32);
 		for(i = 0; i < dwRuns; i++) {
 			Util_GenRandom(pb3, 4096);
-			r1 = DeviceWriteDMA(ctx, dwAddrPci32, pb3, 4096, 0);
-			r2 = DeviceReadDMA(ctx, dwAddrPci32, pb2, 4096, 0);
-			if(!r1 || !r2 || (dwOffset = Util_memcmpEx(pb2, pb3, 4096))) {
-				DeviceWriteDMA(ctx, dwAddrPci32, pb1, 4096, 0);
+			r1 = DeviceWriteDMA(ctx, dwAddrPci32, pb3, dwChunkSize, 0);
+			r2 = DeviceReadDMA(ctx, dwAddrPci32, pb2, dwChunkSize, 0);
+			if(!r1 || !r2 || (dwOffset = Util_memcmpEx(pb2, pb3, dwChunkSize))) {
+				DeviceWriteDMA(ctx, dwAddrPci32, pb1, dwChunkSize, 0);
 				printf("Memory Test Write: Failed. DMA failed / data changed by target computer / memory corruption. Write: %i. Read: %i. Run: %i. Offset: 0x%03x\n", r1, r2, i, --dwOffset);
 				return;
 			}
 		}
-		DeviceWriteDMA(ctx, dwAddrPci32, pb1, 4096, 0);
+		DeviceWriteDMA(ctx, dwAddrPci32, pb1, dwChunkSize, 0);
 		printf("Memory Test Write: Success!\n");
 	}
 }

@@ -123,7 +123,7 @@ BOOL PCILeechConfigIntialize(_In_ DWORD argc, _In_ char* argv[], _Inout_ PPCILEE
             ctx->cfg->qwEFI_IBI_SYST = Util_GetNumeric(argv[i + 1]);
         } else if(0 == strcmp(argv[i], "-iosize")) {
             ctx->cfg->qwMaxSizeDmaIo = Util_GetNumeric(argv[i + 1]);
-            ctx->cfg->qwMaxSizeDmaIo = ~0xfff & max(0x1000, ctx->cfg->qwMaxSizeDmaIo);
+            ctx->cfg->qwMaxSizeDmaIo = ~0x3 & max(4, ctx->cfg->qwMaxSizeDmaIo);
         } else if(0 == strcmp(argv[i], "-tlpwait")) {
             ctx->cfg->dwListenTlpTimeMs = (DWORD)(1000 * Util_GetNumeric(argv[i + 1]));
         } else if(0 == strcmp(argv[i], "-device")) {

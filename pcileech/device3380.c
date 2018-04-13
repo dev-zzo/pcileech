@@ -131,7 +131,7 @@ BOOL Device3380_ReadCsr(_In_ PDEVICE_DATA pDeviceData, _In_ WORD wRegAddr, _Out_
 BOOL Device3380_ReadDMA_Retry(PTHREAD_DATA_READ_EP ptd)
 {
 	BOOL result;
-	DWORD cbTransferred;
+	ULONG cbTransferred;
 	DWORD dwStat;
 	// Abort any ongoing DMA
 	Device3380_WriteCsr(ptd->pDeviceData, ptd->pep->rSTAT, 0x02, CSR_CONFIGSPACE_MEMM | CSR_BYTE0); // DMA_ABORT
@@ -149,7 +149,7 @@ BOOL Device3380_ReadDMA_Retry(PTHREAD_DATA_READ_EP ptd)
 
 VOID Device3380_ReadDMA2(PTHREAD_DATA_READ_EP ptd)
 {
-	DWORD dwTimeout, cbTransferred;
+	ULONG dwTimeout, cbTransferred;
 	DWORD dwStat;
 	if(ptd->cb > ptd->pDeviceData->MaxSizeDmaIo) {
 		ptd->result = FALSE;
@@ -159,7 +159,7 @@ VOID Device3380_ReadDMA2(PTHREAD_DATA_READ_EP ptd)
 	// set EP timeout value on conservative usb2 assumptions (3 parallel reads, 35MB/s total speed)
 	// (XMB * 1000 * 3) / (35 * 1024 * 1024) -> 0x2fc9 ~> 0x3000 :: 4k->64ms, 5.3M->520ms
 	dwTimeout = 64 + ptd->cb / 0x3000;
-	WinUsb_SetPipePolicy(ptd->pDeviceData->WinusbHandle, ptd->pep->pipe, PIPE_TRANSFER_TIMEOUT, (ULONG)sizeof(BOOL), &dwTimeout);
+	WinUsb_SetPipePolicy(ptd->pDeviceData->WinusbHandle, ptd->pep->pipe, PIPE_TRANSFER_TIMEOUT, (ULONG)sizeof(ULONG), &dwTimeout);
 	// Abort any ongoing DMA
 	Device3380_WriteCsr(ptd->pDeviceData, ptd->pep->rSTAT, 0x02, CSR_CONFIGSPACE_MEMM | CSR_BYTE0); // DMA_ABORT
 	do {
@@ -184,7 +184,8 @@ BOOL Device3380_ReadDMA(_Inout_ PPCILEECH_CONTEXT ctx, _In_ QWORD qwAddr, _Out_ 
 	THREAD_DATA_READ_EP td[3];
 	DWORD i, dwChunk;
 	PDEVICE_DATA pDeviceData = (PDEVICE_DATA)ctx->hDevice;
-	if(cb % 0x1000) { return FALSE; }
+	// Make sure the size is DWORD aligned
+	if(cb % 4) { return FALSE; }
 	if(cb > 0x01000000) { return FALSE; }
 	if(qwAddr + cb > 0x100000000) { return FALSE; }
 	if(Device3380_IsInReservedMemoryRange(qwAddr, cb) && !ctx->cfg->fForceRW) { return FALSE; }
@@ -403,6 +404,21 @@ VOID Device3380_Close(_Inout_ PPCILEECH_CONTEXT ctx)
 	ctx->hDevice = 0;
 }
 
+VOID Device3380_DrainPipe(_In_ PDEVICE_DATA pDeviceData, _In_ UCHAR pipeId)
+{
+	ULONG dwTimeout, cbTransferred;
+	BYTE buffer[4096];
+	// Read all the data
+	dwTimeout = 10;
+	WinUsb_SetPipePolicy(pDeviceData->WinusbHandle, pipeId, PIPE_TRANSFER_TIMEOUT, (ULONG)sizeof(ULONG), &dwTimeout);
+	while(WinUsb_ReadPipe(pDeviceData->WinusbHandle, pipeId, buffer, 4096, &cbTransferred, NULL));
+	dwTimeout = 500;
+	WinUsb_SetPipePolicy(pDeviceData->WinusbHandle, pipeId, PIPE_TRANSFER_TIMEOUT, (ULONG)sizeof(ULONG), &dwTimeout);
+	// Flush and reset
+	WinUsb_FlushPipe(pDeviceData->WinusbHandle, pipeId);
+	WinUsb_ResetPipe(pDeviceData->WinusbHandle, pipeId);
+}
+
 BOOL Device3380_Open(_Inout_ PPCILEECH_CONTEXT ctx)
 {
 	BOOL result;
@@ -434,6 +450,18 @@ BOOL Device3380_Open(_Inout_ PPCILEECH_CONTEXT ctx)
 	ctx->cfg->dev.pfnClose = Device3380_Close;
 	ctx->cfg->dev.pfnReadDMA = Device3380_ReadDMA;
 	ctx->cfg->dev.pfnWriteDMA = Device3380_WriteDMA;
+	// Abort any ongoing DMA
+	Device3380_WriteCsr((PDEVICE_DATA)ctx->hDevice, REG_DMASTAT_1, 0x02, CSR_CONFIGSPACE_MEMM | CSR_BYTE0); // DMA_ABORT
+	Device3380_WriteCsr((PDEVICE_DATA)ctx->hDevice, REG_DMASTAT_2, 0x02, CSR_CONFIGSPACE_MEMM | CSR_BYTE0); // DMA_ABORT
+	Device3380_WriteCsr((PDEVICE_DATA)ctx->hDevice, REG_DMASTAT_3, 0x02, CSR_CONFIGSPACE_MEMM | CSR_BYTE0); // DMA_ABORT
+	// Reset IN FIFOs
+	Device3380_WriteCsr((PDEVICE_DATA)ctx->hDevice, 0x3EC, (1 << 9), CSR_CONFIGSPACE_MEMM | CSR_BYTEALL);
+	Device3380_WriteCsr((PDEVICE_DATA)ctx->hDevice, 0x40C, (1 << 9), CSR_CONFIGSPACE_MEMM | CSR_BYTEALL);
+	Device3380_WriteCsr((PDEVICE_DATA)ctx->hDevice, 0x42C, (1 << 9), CSR_CONFIGSPACE_MEMM | CSR_BYTEALL);
+	Device3380_WriteCsr((PDEVICE_DATA)ctx->hDevice, 0x44C, (1 << 9), CSR_CONFIGSPACE_MEMM | CSR_BYTEALL);
+	Device3380_DrainPipe((PDEVICE_DATA)ctx->hDevice, USB_EP_DMAIN1);
+	Device3380_DrainPipe((PDEVICE_DATA)ctx->hDevice, USB_EP_DMAIN2);
+	Device3380_DrainPipe((PDEVICE_DATA)ctx->hDevice, USB_EP_DMAIN3);
 	return TRUE;
 }
 
@@ -491,13 +519,13 @@ VOID Device3380_Open_SetPipePolicy(_In_ PDEVICE_DATA pDeviceData)
 	BOOL boolTRUE = TRUE;
 	ULONG ulTIMEOUT = 500; // ms
 	WinUsb_SetPipePolicy(pDeviceData->WinusbHandle, USB_EP_DMAOUT, AUTO_CLEAR_STALL, (ULONG)sizeof(BOOL), &boolTRUE);
-	WinUsb_SetPipePolicy(pDeviceData->WinusbHandle, USB_EP_DMAOUT, PIPE_TRANSFER_TIMEOUT, (ULONG)sizeof(BOOL), &ulTIMEOUT);
+	WinUsb_SetPipePolicy(pDeviceData->WinusbHandle, USB_EP_DMAOUT, PIPE_TRANSFER_TIMEOUT, (ULONG)sizeof(ULONG), &ulTIMEOUT);
 	WinUsb_SetPipePolicy(pDeviceData->WinusbHandle, USB_EP_DMAIN1, AUTO_CLEAR_STALL, (ULONG)sizeof(BOOL), &boolTRUE);
-	WinUsb_SetPipePolicy(pDeviceData->WinusbHandle, USB_EP_DMAIN1, PIPE_TRANSFER_TIMEOUT, (ULONG)sizeof(BOOL), &ulTIMEOUT);
+	WinUsb_SetPipePolicy(pDeviceData->WinusbHandle, USB_EP_DMAIN1, PIPE_TRANSFER_TIMEOUT, (ULONG)sizeof(ULONG), &ulTIMEOUT);
 	WinUsb_SetPipePolicy(pDeviceData->WinusbHandle, USB_EP_DMAIN2, AUTO_CLEAR_STALL, (ULONG)sizeof(BOOL), &boolTRUE);
-	WinUsb_SetPipePolicy(pDeviceData->WinusbHandle, USB_EP_DMAIN2, PIPE_TRANSFER_TIMEOUT, (ULONG)sizeof(BOOL), &ulTIMEOUT);
+	WinUsb_SetPipePolicy(pDeviceData->WinusbHandle, USB_EP_DMAIN2, PIPE_TRANSFER_TIMEOUT, (ULONG)sizeof(ULONG), &ulTIMEOUT);
 	WinUsb_SetPipePolicy(pDeviceData->WinusbHandle, USB_EP_DMAIN3, AUTO_CLEAR_STALL, (ULONG)sizeof(BOOL), &boolTRUE);
-	WinUsb_SetPipePolicy(pDeviceData->WinusbHandle, USB_EP_DMAIN3, PIPE_TRANSFER_TIMEOUT, (ULONG)sizeof(BOOL), &ulTIMEOUT);
+	WinUsb_SetPipePolicy(pDeviceData->WinusbHandle, USB_EP_DMAIN3, PIPE_TRANSFER_TIMEOUT, (ULONG)sizeof(ULONG), &ulTIMEOUT);
 }
 
 BOOL Device3380_Open2(_Inout_ PPCILEECH_CONTEXT ctx)
